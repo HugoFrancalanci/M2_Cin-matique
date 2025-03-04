@@ -1,102 +1,124 @@
-%% ===========================
-%      TRAITEMENT CINÉMATIQUE
-% ===========================
-clc; clear; close all;
+%% ================= Traitement cinématique ================= %%  
+clear; clc; close all;
 
 %% -------- Chargement de l'environnement -------- %%
-
 % Ajout de la bibliothèque "btk"
 addpath(genpath('C:\Users\Francalanci Hugo\Documents\MATLAB\Stage Sainte-Justine\HUG\btk'));
 
 % Ajout de la bibliothèque "3D Kinematics and Inverse Dynamics"
 addpath(genpath('C:\Users\Francalanci Hugo\Documents\MATLAB\Stage Sainte-Justine\HUG\3D Kinematics and Inverse Dynamics'));
 
-% Accès au fichier C3D
+% Chargement du fichier c3d
 fichier = 'C:\Users\Francalanci Hugo\Documents\MATLAB\Stage Sainte-Justine\HUG\Sujets\MF01\MF01-MF01-20240101-PROTOCOL01-ANALYTIC1-.c3d';
 c3dH = btkReadAcquisition(fichier);
 
 %% -------- Extraction des marqueurs -------- %%
 markers = btkGetMarkers(c3dH);
-available_markers = fieldnames(markers);
-num_frames = size(markers.CV7, 1); % Nombre de frames
 
-% Extraction de la fréquence d'échantillonnage
-freq = btkGetPointFrequency(c3dH);
-time = (0:num_frames-1) / freq; % Vecteur temps en secondes
+% Récupération du nombre total de frames et fréquence d'échantillonnage
+nFrames = btkGetLastFrame(c3dH);
+fs = 200; % Fréquence d'acquisition en Hz
+time = (0:nFrames-1) / fs; % Axe du temps en secondes
 
-%% -------- Visualisation des marqueurs en 3D -------- %%
-figure; hold on;
-for i = 1:length(available_markers)
-    marker = markers.(available_markers{i});
-    scatter3(marker(:,1), -marker(:,3), marker(:,2), 50, 'filled');
+%% -------- Initialisation des matrices pour stocker les angles -------- %%
+Angles_HT = zeros(nFrames, 3);
+Angles_ST = zeros(nFrames, 3);
+Angles_GH = zeros(nFrames, 3);
+
+% Fonction pour normaliser un vecteur
+normalize_vector = @(v) v / norm(v);
+
+%% ======== Traitement des repères et extraction des angles d'Euler ======== %%
+for i = 1:nFrames
+    % Mise à jour des repères à chaque frame
+    SJN = markers.SJN(i,:); CV7 = markers.CV7(i,:);
+    TV8 = markers.TV8(i,:); SXS = markers.SXS(i,:);
+    
+    % Repère du thorax
+    Ot = SJN;
+    Yt = normalize_vector(mean([SXS; TV8]) - mean([SJN; CV7]));
+    Zt = normalize_vector(cross(SJN - CV7, mean([SXS; TV8]) - SJN));
+    Xt = normalize_vector(cross(Yt, Zt));
+
+    % Vérification des vecteurs colinéaires
+    if abs(dot(Yt, Zt)) > 0.99
+        warning('Problème : les vecteurs Yt et Zt sont presque colinéaires !');
+    end
+    
+    % Repère de la scapula
+    RSAA = markers.RSAA(i,:); RSRS = markers.RSRS(i,:); RSIA = markers.RSIA(i,:);
+    Os = RSAA;
+    Zs = normalize_vector(RSAA - RSRS);
+    Xs = normalize_vector(cross(RSIA - RSAA, RSRS - RSAA));
+    Ys = normalize_vector(cross(Xs, Zs));
+
+    % Repère de l'humérus
+    RGH = markers.RSCT(i,:); RHME = markers.RHME(i,:); RHLE = markers.RHLE(i,:);
+    Rmid_HLE_HME = mean([RHLE; RHME]);
+    Oh = RGH;
+    Yh = normalize_vector(RGH - Rmid_HLE_HME);
+    Xh = normalize_vector(cross(RGH - RHLE, RGH - RHME));
+    Zh = normalize_vector(cross(Yh, Xh));
+
+    % Matrices de rotation
+    Rt = [Xt', Yt', Zt']; % Thorax
+    Rs = [Xs', Ys', Zs']; % Scapula
+    Rh = [Xh', Yh', Zh']; % Humérus
+
+    % Correction de l'orthonormalité (Gram-Schmidt)
+    [Ut,~,Vt] = svd(Rt); Rt = Ut * Vt';
+    [Us,~,Vs] = svd(Rs); Rs = Us * Vs';
+    [Uh,~,Vh] = svd(Rh); Rh = Uh * Vh';
+
+    % Matrices de rotation relatives
+    R_HT = Rt' * Rh; % Humérus dans le repère du thorax
+    R_ST = Rt' * Rs; % Scapula dans le repère du thorax
+    R_GH = Rs' * Rh; % Humérus dans le repère de la scapula
+
+    % Extraction des angles d'Euler Y-X-Y pour HT et GH
+    Angles_HT(i,1) = atan2(R_HT(3,2), R_HT(3,3));
+    Angles_HT(i,2) = asin(-R_HT(3,1));
+    Angles_HT(i,3) = atan2(R_HT(2,1), R_HT(1,1));
+
+    Angles_GH(i,1) = atan2(R_GH(3,2), R_GH(3,3));
+    Angles_GH(i,2) = asin(-R_GH(3,1));
+    Angles_GH(i,3) = atan2(R_GH(2,1), R_GH(1,1));
+
+    % Extraction des angles d'Euler Y-X-Z pour ST
+    Angles_ST(i,1) = atan2(-R_ST(2,1), R_ST(1,1));
+    Angles_ST(i,2) = asin(R_ST(3,1));
+    Angles_ST(i,3) = atan2(-R_ST(3,2), R_ST(3,3));
 end
-xlabel('X (mm)'); ylabel('Z (mm)'); zlabel('Y (mm)');
-title('Position des marqueurs en 3D');
-grid on; axis equal; rotate3d on;
 
-%% -------- Initialisation des matrices -------- %%
-Euler_angles = zeros(num_frames, 3); % Stockage des angles ZXY
+%% -------- Correction des discontinuités et filtrage -------- %%
+Angles_HT = unwrap(Angles_HT);
+Angles_ST = unwrap(Angles_ST);
+Angles_GH = unwrap(Angles_GH);
 
-%% -------- Calcul des angles pour chaque frame -------- %%
-for frame = 1:num_frames
-    % Extraction des marqueurs de la frame actuelle
-    CV7 = markers.CV7(frame,:);
-    TV8 = markers.TV8(frame,:);
-    SJN = markers.SJN(frame,:);
-    SXS = markers.SXS(frame,:);
-    
-    GH  = markers.RHUM1(frame,:);
-    HLE = markers.REJC(frame,:);
-    HME = markers.RGJC(frame,:);
-    
-    % ======= Définition des repères locaux =======
-    
-    % Thorax (Xt, Yt, Zt)
-    Yt = normalize(mean([SXS; TV8]) - mean([SJN; CV7])); 
-    Zt = normalize(cross(SJN - CV7, mean([SXS; TV8]) - SJN));
-    Xt = cross(Yt, Zt);
-    Ot = mean([SJN; CV7]); 
+fc = 6; % Fréquence de coupure (Hz)
+[b, a] = butter(2, fc / (fs/2), 'low');
 
-    % Humérus (Xh, Yh, Zh)
-    Yh = normalize(GH - mean([HLE; HME]));
-    Xh = normalize(cross(GH - HLE, GH - HME));
-    Zh = cross(Yh, Xh);  
-    Oh = GH; 
+Angles_HT = filtfilt(b, a, Angles_HT);
+Angles_ST = filtfilt(b, a, Angles_ST);
+Angles_GH = filtfilt(b, a, Angles_GH);
 
-    % ======= Matrices homogènes =======
-    T_torax  = compute_homogeneous_matrix(Xt, Yt, Zt, Ot);
-    T_humerus = compute_homogeneous_matrix(Xh, Yh, Zh, Oh);
-
-    % ======= Transformation relative =======
-    T_hum_thorax = Mprod_array3(Tinv_array3(T_torax), T_humerus);
-
-    % ======= Extraction des angles d'Euler =======
-    Euler_angles(frame, :) = rad2deg(R2mobileZXY_array3(T_hum_thorax(1:3, 1:3)));
-end
-
-%% -------- Visualisation des angles en fonction du temps -------- %%
+%% -------- Affichage des angles d'Euler -------- %%
 figure;
 subplot(3,1,1);
-plot(time, Euler_angles(:,1), 'r', 'LineWidth', 1.5);
-xlabel('Temps (s)'); ylabel('Angle Z (°)'); title('Rotation selon Z'); grid on;
+plot(time, rad2deg(Angles_HT), 'LineWidth', 1.5);
+xlabel('Temps (s)'); ylabel('Angle (°)');
+legend('HT - Y', 'HT - X', 'HT - Y');
+title('Angles Huméro-Thoracique (HT)'); grid on;
 
 subplot(3,1,2);
-plot(time, Euler_angles(:,2), 'g', 'LineWidth', 1.5);
-xlabel('Temps (s)'); ylabel('Angle X (°)'); title('Rotation selon X'); grid on;
+plot(time, rad2deg(Angles_ST), 'LineWidth', 1.5);
+xlabel('Temps (s)'); ylabel('Angle (°)');
+legend('ST - Y', 'ST - X', 'ST - Z');
+title('Angles Scapulo-Thoracique (ST)'); grid on;
 
 subplot(3,1,3);
-plot(time, Euler_angles(:,3), 'b', 'LineWidth', 1.5);
-xlabel('Temps (s)'); ylabel('Angle Y (°)'); title('Rotation selon Y'); grid on;
-
-%% ===========================
-%     FONCTIONS UTILITAIRES
-% ===========================
-
-function T = compute_homogeneous_matrix(X, Y, Z, O)
-    % Construction de la matrice homogène 4x4
-    R = [X(:), Y(:), Z(:)];
-    T = eye(4);
-    T(1:3, 1:3) = R;
-    T(1:3, 4) = O(:);
-end
+plot(time, rad2deg(Angles_GH), 'LineWidth', 1.5);
+xlabel('Temps (s)'); ylabel('Angle (°)');
+legend('GH - Y', 'GH - X', 'GH - Y');
+title('Angles Gléno-Huméral (GH)'); grid on;
 
